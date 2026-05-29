@@ -227,6 +227,11 @@ class ApiKeyCreate(BaseModel):
     scope: Literal["read", "read_write", "full"] = "read_write"
 
 
+class PollData(BaseModel):
+    options: list[str]
+    duration_minutes: int = 1440  # 24 hours default
+
+
 class PostCreate(BaseModel):
     account_id: str
     content: str
@@ -235,6 +240,7 @@ class PostCreate(BaseModel):
     pillar_id: Optional[str] = None
     category_id: Optional[str] = None
     tags: list[str] = []
+    poll: Optional[PollData] = None
 
 
 class ReplyCreate(BaseModel):
@@ -360,7 +366,10 @@ async def oauth_callback(
                 "followers_count": profile.get("followers_count", 0),
                 "access_token": tokens["access_token"],
                 "refresh_token": tokens.get("refresh_token"),
-                "token_expires_at": None,
+                "token_expires_at": (
+                    datetime.now(timezone.utc) + timedelta(seconds=tokens["expires_in"])
+                    if tokens.get("expires_in") else None
+                ),
                 "scopes": tokens.get("scope", "").split(),
                 "connected_at": datetime.now(timezone.utc),
                 "is_active": True,
@@ -529,6 +538,35 @@ async def disconnect_account(account_id: str):
     return {"status": "disconnected"}
 
 
+@app.post("/api/v1/accounts/{account_id}/refresh-token", tags=["Accounts"], summary="Refresh OAuth token for a Twitter/X account")
+async def refresh_account_token(account_id: str):
+    db = get_db()
+    account = await db.accounts.find_one({"account_id": account_id})
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if account.get("platform") != "twitter":
+        raise HTTPException(status_code=400, detail="Token refresh is only supported for Twitter/X accounts")
+    refresh_token = account.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(status_code=400, detail="No refresh token stored — re-connect the account via OAuth")
+    try:
+        tokens = await twitter_platform.refresh_access_token(refresh_token)
+        now = datetime.now(timezone.utc)
+        new_expires = now + timedelta(seconds=tokens.get("expires_in", 7200))
+        await db.accounts.update_one(
+            {"account_id": account_id},
+            {"$set": {
+                "access_token": tokens["access_token"],
+                "refresh_token": tokens.get("refresh_token", refresh_token),
+                "token_expires_at": new_expires,
+                "is_active": True,
+            }},
+        )
+        return {"status": "refreshed", "expires_at": new_expires.isoformat()}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Token refresh failed: {exc}")
+
+
 @app.get("/api/v1/accounts/{account_id}/health", tags=["Accounts"], summary="Check token validity")
 async def account_health(account_id: str):
     db = get_db()
@@ -601,12 +639,16 @@ async def create_post(body: PostCreate):
     account = await db.accounts.find_one({"account_id": body.account_id, "is_active": True})
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    has_poll = bool(body.poll and body.poll.options)
     doc = {
         "post_id": str(uuid.uuid4()),
         "platform": account["platform"],
         "account_id": body.account_id,
         "content": body.content,
         "media_urls": body.media_urls,
+        "post_type": "poll" if has_poll else None,
+        "poll_options": body.poll.options if has_poll else [],
+        "poll_duration_minutes": body.poll.duration_minutes if has_poll else None,
         "status": "scheduled" if body.scheduled_at else "draft",
         "scheduled_at": body.scheduled_at,
         "published_at": None,
@@ -658,7 +700,7 @@ async def update_post(post_id: str, body: dict = Body(...)):
     # Metadata fields (pillar, category, tags) can be updated on any post status
     META_FIELDS = {"pillar_id", "category_id", "tags"}
     # Content fields only allowed on draft/scheduled posts
-    CONTENT_FIELDS = {"content", "media_urls", "scheduled_at"}
+    CONTENT_FIELDS = {"content", "media_urls", "scheduled_at", "poll_options", "poll_duration_minutes"}
 
     meta_update = {k: v for k, v in body.items() if k in META_FIELDS}
     content_update = {k: v for k, v in body.items() if k in CONTENT_FIELDS}

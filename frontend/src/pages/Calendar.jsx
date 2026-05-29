@@ -5,13 +5,16 @@ import {
   ChevronRight,
   Clock,
   Copy,
+  Edit2,
   Image as ImageIcon,
   List,
+  Loader2,
+  Save,
   Trash2,
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { deletePost, getPosts } from "../api";
+import { deletePost, getPosts, updatePost } from "../api";
 
 // ── Platform / status metadata ─────────────────────────────────────────────
 
@@ -174,9 +177,21 @@ function MediaViewer({ urls, postType }) {
 
 // ── Post Detail Modal ──────────────────────────────────────────────────────
 
-function PostDetail({ post, onClose, onDelete }) {
-  const [deleting, setDeleting] = useState(false);
-  const [copied, setCopied] = useState(false);
+function PostDetail({ post, onClose, onDelete, onUpdate }) {
+  const [deleting, setDeleting]       = useState(false);
+  const [copied, setCopied]           = useState(false);
+  const [editing, setEditing]         = useState(false);
+  const [saving, setSaving]           = useState(false);
+  const [saveErr, setSaveErr]         = useState("");
+  const [editContent, setEditContent] = useState(post.content || "");
+  const [editSchedule, setEditSchedule] = useState(
+    post.scheduled_at ? new Date(post.scheduled_at).toISOString().slice(0, 16) : ""
+  );
+
+  const canEdit = ["draft", "scheduled"].includes(post.status);
+  const isPoll  = post.post_type === "poll" || post.poll_options?.length > 0;
+  const hasMedia   = post.media_urls?.length > 0;
+  const isCarousel = (post.post_type === "carousel" || post.media_urls?.length > 1) && !isPoll;
 
   const handleDelete = async () => {
     setDeleting(true);
@@ -195,8 +210,31 @@ function PostDetail({ post, onClose, onDelete }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const hasMedia   = post.media_urls?.length > 0;
-  const isCarousel = post.post_type === "carousel" || post.media_urls?.length > 1;
+  const handleSave = async () => {
+    setSaving(true);
+    setSaveErr("");
+    try {
+      const body = {};
+      if (editContent.trim() !== (post.content || "").trim()) body.content = editContent.trim();
+      if (editSchedule) {
+        const iso = new Date(editSchedule).toISOString();
+        if (iso !== post.scheduled_at) body.scheduled_at = iso;
+      }
+      if (Object.keys(body).length === 0) { setEditing(false); setSaving(false); return; }
+      await updatePost(post.post_id, body);
+      const updated = {
+        ...post,
+        ...body,
+        scheduled_at: editSchedule ? new Date(editSchedule).toISOString() : post.scheduled_at,
+      };
+      onUpdate(updated);
+      setEditing(false);
+    } catch (err) {
+      setSaveErr(err.response?.data?.detail || "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div
@@ -219,6 +257,11 @@ function PostDetail({ post, onClose, onDelete }) {
             <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${STATUS_PILL[post.status] || "text-slate-600 bg-slate-100 border border-slate-200"}`}>
               {post.status}
             </span>
+            {isPoll && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-violet-50 text-violet-600 border border-violet-200 font-medium">
+                Poll
+              </span>
+            )}
             {isCarousel && (
               <span className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-200 font-medium flex items-center gap-1">
                 <ImageIcon size={10} />
@@ -226,99 +269,195 @@ function PostDetail({ post, onClose, onDelete }) {
               </span>
             )}
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 ml-2 flex-shrink-0">
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+            {/* Edit button — only for draft/scheduled non-editing state */}
+            {canEdit && !editing && (
+              <button
+                onClick={() => { setEditing(true); setSaveErr(""); }}
+                title="Edit post"
+                className="p-1.5 text-slate-400 hover:text-violet-600 hover:bg-violet-50 rounded-lg transition-colors"
+              >
+                <Edit2 size={14} />
+              </button>
+            )}
+            <button onClick={onClose} className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg transition-colors">
+              <X size={16} />
+            </button>
+          </div>
         </div>
 
         {/* Body */}
         <div className="p-5 space-y-4">
-          {/* Timestamp */}
-          <div className="flex items-center gap-1.5 text-xs text-slate-500">
-            <Clock size={12} />
-            {fmtDate(post.scheduled_at || post.published_at || post.created_at)}
-          </div>
 
-          {/* Media viewer */}
-          {hasMedia && <MediaViewer urls={post.media_urls} postType={post.post_type} />}
+          {editing ? (
+            /* ── Edit form ── */
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1.5 block">
+                  {isPoll ? "Poll question" : "Caption"}
+                </label>
+                <textarea
+                  value={editContent}
+                  onChange={(e) => setEditContent(e.target.value)}
+                  rows={5}
+                  className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-violet-500"
+                />
+              </div>
 
-          {/* Caption */}
-          {post.content && (
-            <div className="relative group">
-              <p className="text-sm text-slate-800 whitespace-pre-wrap break-words leading-relaxed pr-7">
-                {post.content}
-              </p>
-              <button
-                onClick={handleCopy}
-                title="Copy caption"
-                className="absolute top-0 right-0 text-slate-300 hover:text-slate-600 transition-colors"
-              >
-                {copied
-                  ? <Check size={14} className="text-emerald-500" />
-                  : <Copy size={14} />
-                }
-              </button>
-            </div>
-          )}
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1.5 block flex items-center gap-1.5">
+                  <Clock size={11} /> Scheduled time
+                </label>
+                <input
+                  type="datetime-local"
+                  value={editSchedule}
+                  min={new Date(Date.now() + 5 * 60000).toISOString().slice(0, 16)}
+                  onChange={(e) => setEditSchedule(e.target.value)}
+                  className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+                />
+              </div>
 
-          {/* Tags / pillar / category */}
-          {(post.pillar_id || post.category_id || post.tags?.length > 0) && (
-            <div className="flex flex-wrap gap-1.5">
-              {post.pillar_id && (
-                <span className="text-xs px-2 py-0.5 rounded-md bg-purple-50 text-purple-600 border border-purple-200">
-                  Pillar: {post.pillar_id}
-                </span>
+              {saveErr && (
+                <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                  ⚠️ {saveErr}
+                </p>
               )}
-              {post.category_id && (
-                <span className="text-xs px-2 py-0.5 rounded-md bg-orange-50 text-orange-600 border border-orange-200">
-                  Category: {post.category_id}
-                </span>
-              )}
-              {post.tags?.map((tag) => (
-                <span key={tag} className="text-xs px-2 py-0.5 rounded-md bg-slate-100 text-slate-600">
-                  #{tag}
-                </span>
-              ))}
-            </div>
-          )}
 
-          {/* Metrics — published posts */}
-          {post.status === "published" && post.metrics && Object.keys(post.metrics).length > 0 && (
-            <div className="grid grid-cols-4 gap-2">
-              {[
-                ["❤️", "Likes",    post.metrics.likes],
-                ["💬", "Comments", post.metrics.comments],
-                ["🔁", "Shares",   post.metrics.shares],
-                ["👁️", "Reach",    post.metrics.reach],
-              ].map(([icon, label, val]) => (
-                <div key={label} className="text-center p-2 rounded-lg bg-slate-50 border border-slate-100">
-                  <div className="text-base">{icon}</div>
-                  <div className="text-xs font-semibold text-slate-800">{val ?? "—"}</div>
-                  <div className="text-[10px] text-slate-400">{label}</div>
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={handleSave}
+                  disabled={saving || !editContent.trim()}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-violet-600 text-white rounded-xl text-sm font-semibold hover:bg-violet-700 disabled:opacity-40 transition-colors"
+                >
+                  {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+                  {saving ? "Saving…" : "Save changes"}
+                </button>
+                <button
+                  onClick={() => { setEditing(false); setEditContent(post.content || ""); setEditSchedule(post.scheduled_at ? new Date(post.scheduled_at).toISOString().slice(0, 16) : ""); setSaveErr(""); }}
+                  className="px-4 py-2 border border-slate-200 text-slate-600 rounded-xl text-sm font-medium hover:bg-slate-50 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            /* ── View mode ── */
+            <>
+              {/* Timestamp */}
+              <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                <Clock size={12} />
+                {fmtDate(post.scheduled_at || post.published_at || post.created_at)}
+              </div>
+
+              {/* Media viewer */}
+              {hasMedia && <MediaViewer urls={post.media_urls} postType={post.post_type} />}
+
+              {/* Caption */}
+              {post.content && (
+                <div className="relative group">
+                  <p className="text-sm text-slate-800 whitespace-pre-wrap break-words leading-relaxed pr-7">
+                    {post.content}
+                  </p>
+                  <button
+                    onClick={handleCopy}
+                    title="Copy caption"
+                    className="absolute top-0 right-0 text-slate-300 hover:text-slate-600 transition-colors"
+                  >
+                    {copied
+                      ? <Check size={14} className="text-emerald-500" />
+                      : <Copy size={14} />
+                    }
+                  </button>
                 </div>
-              ))}
-            </div>
-          )}
+              )}
 
-          {/* Error message */}
-          {post.error_message && (
-            <p className="text-xs text-red-600 bg-red-50 rounded-lg p-3 border border-red-200">
-              ⚠️ {post.error_message}
-            </p>
-          )}
+              {/* Poll options */}
+              {isPoll && post.poll_options?.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Poll options</p>
+                  {post.poll_options.map((opt, i) => (
+                    <div
+                      key={i}
+                      className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200 hover:border-violet-200 transition-colors"
+                    >
+                      <span className="w-5 h-5 rounded-full bg-violet-100 text-violet-700 text-[10px] font-bold flex items-center justify-center flex-shrink-0">
+                        {String.fromCharCode(65 + i)}
+                      </span>
+                      <span className="text-sm text-slate-700">{opt}</span>
+                    </div>
+                  ))}
+                  {post.poll_duration_minutes && (
+                    <p className="text-xs text-slate-400 flex items-center gap-1 pt-0.5">
+                      <Clock size={11} />
+                      Duration:{" "}
+                      {post.poll_duration_minutes % 1440 === 0
+                        ? `${post.poll_duration_minutes / 1440} day${post.poll_duration_minutes / 1440 > 1 ? "s" : ""}`
+                        : `${post.poll_duration_minutes / 60} hours`}
+                    </p>
+                  )}
+                </div>
+              )}
 
-          {/* Actions */}
-          {["draft", "scheduled"].includes(post.status) && (
-            <div className="pt-1 border-t border-slate-100">
-              <button
-                onClick={handleDelete}
-                disabled={deleting}
-                className="flex items-center gap-1.5 text-xs text-red-500 hover:text-red-700 transition-colors disabled:opacity-50"
-              >
-                <Trash2 size={12} />
-                {deleting ? "Deleting…" : "Delete post"}
-              </button>
-            </div>
+              {/* Tags / pillar / category */}
+              {(post.pillar_id || post.category_id || post.tags?.length > 0) && (
+                <div className="flex flex-wrap gap-1.5">
+                  {post.pillar_id && (
+                    <span className="text-xs px-2 py-0.5 rounded-md bg-purple-50 text-purple-600 border border-purple-200">
+                      Pillar: {post.pillar_id}
+                    </span>
+                  )}
+                  {post.category_id && (
+                    <span className="text-xs px-2 py-0.5 rounded-md bg-orange-50 text-orange-600 border border-orange-200">
+                      Category: {post.category_id}
+                    </span>
+                  )}
+                  {post.tags?.map((tag) => (
+                    <span key={tag} className="text-xs px-2 py-0.5 rounded-md bg-slate-100 text-slate-600">
+                      #{tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Metrics — published posts */}
+              {post.status === "published" && post.metrics && Object.keys(post.metrics).length > 0 && (
+                <div className="grid grid-cols-4 gap-2">
+                  {[
+                    ["❤️", "Likes",    post.metrics.likes],
+                    ["💬", "Comments", post.metrics.comments],
+                    ["🔁", "Shares",   post.metrics.shares],
+                    ["👁️", "Reach",    post.metrics.reach],
+                  ].map(([icon, label, val]) => (
+                    <div key={label} className="text-center p-2 rounded-lg bg-slate-50 border border-slate-100">
+                      <div className="text-base">{icon}</div>
+                      <div className="text-xs font-semibold text-slate-800">{val ?? "—"}</div>
+                      <div className="text-[10px] text-slate-400">{label}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Error message */}
+              {post.error_message && (
+                <p className="text-xs text-red-600 bg-red-50 rounded-lg p-3 border border-red-200">
+                  ⚠️ {post.error_message}
+                </p>
+              )}
+
+              {/* Delete action */}
+              {canEdit && (
+                <div className="pt-1 border-t border-slate-100">
+                  <button
+                    onClick={handleDelete}
+                    disabled={deleting}
+                    className="flex items-center gap-1.5 text-xs text-red-500 hover:text-red-700 transition-colors disabled:opacity-50"
+                  >
+                    <Trash2 size={12} />
+                    {deleting ? "Deleting…" : "Delete post"}
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -756,7 +895,13 @@ export default function Calendar() {
         <PostDetail
           post={selectedPost}
           onClose={() => setSelectedPost(null)}
-          onDelete={(id) => setPosts((prev) => prev.filter((p) => p.post_id !== id))}
+          onDelete={(id) => {
+            setPosts((prev) => prev.filter((p) => p.post_id !== id));
+          }}
+          onUpdate={(updated) => {
+            setPosts((prev) => prev.map((p) => p.post_id === updated.post_id ? updated : p));
+            setSelectedPost(updated);
+          }}
         />
       )}
 
