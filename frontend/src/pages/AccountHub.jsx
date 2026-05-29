@@ -1,7 +1,7 @@
 import { AlertCircle, CheckCircle2, Clock, RefreshCw, Unplug, Wifi } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { connectPlatform, disconnectAccount, getAccounts } from "../api";
+import { connectPlatform, disconnectAccount, getAccounts, refreshAccountToken } from "../api";
 
 // ── Platform metadata ────────────────────────────────────────────────────────
 
@@ -50,6 +50,28 @@ const PLATFORMS = [
       </svg>
     ),
   },
+  {
+    id: "tiktok",
+    label: "TikTok",
+    color: "#010101",
+    bg: "from-slate-900 to-slate-800",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="currentColor" className="w-7 h-7">
+        <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1V9.01a6.33 6.33 0 0 0-.79-.05 6.34 6.34 0 0 0-6.34 6.34 6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.33-6.34V8.69a8.18 8.18 0 0 0 4.78 1.52V6.74a4.85 4.85 0 0 1-1.01-.05z" />
+      </svg>
+    ),
+  },
+  {
+    id: "youtube",
+    label: "YouTube",
+    color: "#FF0000",
+    bg: "from-red-600 to-red-700",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="currentColor" className="w-7 h-7">
+        <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+      </svg>
+    ),
+  },
 ];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -82,7 +104,7 @@ function Toast({ toast, onDismiss }) {
 
 // ── Platform Card ─────────────────────────────────────────────────────────────
 
-function PlatformCard({ platform, accounts, onConnect, onDisconnect, connecting }) {
+function PlatformCard({ platform, accounts, onConnect, onDisconnect, onRefresh, connecting }) {
   const connected = accounts.filter((a) => a.platform === platform.id);
   const isConnecting = connecting === platform.id;
 
@@ -109,46 +131,67 @@ function PlatformCard({ platform, accounts, onConnect, onDisconnect, connecting 
       {/* Body */}
       <div className="flex-1 px-5 py-4 space-y-3">
         {connected.length === 0 ? (
-          <p className="text-sm text-slate-400 py-2">
-            Connect your {platform.label} account to start posting and viewing insights.
-          </p>
+          <div className="py-2 space-y-3">
+            <p className="text-sm text-slate-400">
+              No {platform.label} account connected. Reconnect to resume posting and insights.
+            </p>
+            <button
+              onClick={() => onConnect(platform.id)}
+              disabled={isConnecting}
+              className="flex items-center gap-2 text-sm font-semibold text-slate-700 hover:text-slate-900 disabled:opacity-60 transition-colors"
+            >
+              <RefreshCw size={13} className={isConnecting ? "animate-spin" : ""} />
+              {isConnecting ? "Redirecting…" : `Reconnect ${platform.label}`}
+            </button>
+          </div>
         ) : (
           connected.map((account) => (
             <AccountRow
               key={account.account_id}
               account={account}
               onDisconnect={onDisconnect}
+              onRefresh={onRefresh}
             />
           ))
         )}
       </div>
 
-      {/* Footer */}
-      <div className="px-5 py-4 border-t border-slate-100">
-        <button
-          onClick={() => onConnect(platform.id)}
-          disabled={isConnecting}
-          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-60
-            bg-slate-900 text-white hover:bg-slate-700"
-        >
-          {isConnecting ? (
-            <>
-              <RefreshCw size={14} className="animate-spin" />
-              Redirecting…
-            </>
-          ) : connected.length > 0 ? (
-            "Connect another account"
-          ) : (
-            `Connect ${platform.label}`
-          )}
-        </button>
-      </div>
+      {/* Footer — only shown when at least one account is connected */}
+      {connected.length > 0 && (
+        <div className="px-5 py-4 border-t border-slate-100">
+          <button
+            onClick={() => onConnect(platform.id)}
+            disabled={isConnecting}
+            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-60
+              bg-slate-900 text-white hover:bg-slate-700"
+          >
+            {isConnecting ? (
+              <>
+                <RefreshCw size={14} className="animate-spin" />
+                Redirecting…
+              </>
+            ) : (
+              "Connect another account"
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-function AccountRow({ account, onDisconnect }) {
+function AccountRow({ account, onDisconnect, onRefresh }) {
   const [confirming, setConfirming] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await onRefresh(account.account_id);
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   return (
     <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 border border-slate-100">
@@ -185,6 +228,18 @@ function AccountRow({ account, onDisconnect }) {
 
       {/* Token health */}
       <TokenHealth account={account} />
+
+      {/* Refresh token — Twitter only */}
+      {account.platform === "twitter" && (
+        <button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          title="Refresh token"
+          className="text-slate-400 hover:text-blue-500 transition-colors flex-shrink-0 disabled:opacity-40"
+        >
+          <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
+        </button>
+      )}
 
       {/* Disconnect */}
       {confirming ? (
@@ -315,6 +370,19 @@ export default function AccountHub() {
     }
   };
 
+  const handleRefresh = async (accountId) => {
+    try {
+      await refreshAccountToken(accountId);
+      setToast({ type: "success", message: "Token refreshed — account is ready to post" });
+      loadAccounts();
+    } catch (err) {
+      setToast({
+        type: "error",
+        message: err.response?.data?.detail ?? "Token refresh failed — try reconnecting",
+      });
+    }
+  };
+
   return (
     <div className="p-8">
       {/* Header */}
@@ -326,13 +394,13 @@ export default function AccountHub() {
       </div>
 
       {loading ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-          {[...Array(4)].map((_, i) => (
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
+          {[...Array(6)].map((_, i) => (
             <div key={i} className="bg-white rounded-2xl border border-slate-200 h-64 animate-pulse" />
           ))}
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
           {PLATFORMS.map((platform) => (
             <PlatformCard
               key={platform.id}
@@ -340,6 +408,7 @@ export default function AccountHub() {
               accounts={accounts}
               onConnect={handleConnect}
               onDisconnect={handleDisconnect}
+              onRefresh={handleRefresh}
               connecting={connecting}
             />
           ))}
