@@ -114,11 +114,27 @@ async def get_user_profile(access_token: str) -> dict:
         }
 
 
-async def post_tweet(content: str, access_token: str, reply_to_id: str = None) -> dict:
-    """Post a tweet. Pass reply_to_id to create a reply."""
+async def post_tweet(
+    content: str,
+    access_token: str,
+    reply_to_id: str = None,
+    poll_options: list = None,
+    poll_duration_minutes: int = None,
+) -> dict:
+    """
+    Post a tweet.
+    - reply_to_id: chain this tweet as a reply (used for threads)
+    - poll_options: list of 2-4 strings to create a Twitter poll
+    - poll_duration_minutes: how long the poll runs (5 – 10080 minutes)
+    """
     body = {"text": content}
     if reply_to_id:
         body["reply"] = {"in_reply_to_tweet_id": reply_to_id}
+    if poll_options and len(poll_options) >= 2:
+        body["poll"] = {
+            "options": [str(o) for o in poll_options[:4]],  # Twitter max 4 options
+            "duration_minutes": max(5, min(int(poll_duration_minutes or 1440), 10080)),
+        }
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(

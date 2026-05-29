@@ -15,7 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from database import get_db
-from publishing import publish_post
+from publishing import publish_post, publish_thread
 
 logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
@@ -32,13 +32,53 @@ async def dispatch_scheduled_posts():
         {"status": "scheduled", "scheduled_at": {"$lte": now}}, {"_id": 0}
     ).to_list(50)
 
+    if not due:
+        return
+
+    # ── Separate thread tweets from standalone posts ──────────────────────
+    # Thread posts carry a thread_id + thread_index and must be published
+    # in index order, each tweet replying to the previous one.
+    thread_groups: dict = {}
+    standalone: list = []
+
     for post in due:
+        tid = post.get("thread_id")
+        if tid:
+            thread_groups.setdefault(tid, []).append(post)
+        else:
+            standalone.append(post)
+
+    # ── Standalone posts ──────────────────────────────────────────────────
+    for post in standalone:
         result = await publish_post(post, db)
         event = "post.published" if result["status"] == "published" else "post.failed"
         await fire_webhooks(
             db, event,
             {"post_id": post["post_id"], "platform": post["platform"], **result},
         )
+
+    # ── Thread groups ─────────────────────────────────────────────────────
+    # Sort each group by thread_index so tweets chain in the right order.
+    for tid, thread_posts in thread_groups.items():
+        thread_posts.sort(key=lambda p: p.get("thread_index", 0))
+        await publish_thread(thread_posts, db)
+        # Fire a single webhook for the root tweet to signal the thread
+        root = thread_posts[0]
+        root_doc = await db.posts.find_one({"post_id": root["post_id"]}, {"_id": 0, "status": 1, "platform_post_id": 1})
+        if root_doc:
+            published_ok = root_doc.get("status") == "published"
+            await fire_webhooks(
+                db,
+                "post.published" if published_ok else "post.failed",
+                {
+                    "post_id": root["post_id"],
+                    "platform": root["platform"],
+                    "thread_id": tid,
+                    "thread_length": len(thread_posts),
+                    "status": root_doc.get("status"),
+                    "platform_post_id": root_doc.get("platform_post_id"),
+                },
+            )
 
 
 # ── Inbox polling ─────────────────────────────────────────────────────────────
