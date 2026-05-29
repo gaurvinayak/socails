@@ -1,0 +1,40 @@
+# Environment / secrets
+backend/.env
+frontend/.env
+.env
+.env.local
+.env.*.local
+
+# Python
+backend/__pycache__/
+backend/**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+backend/venv/
+backend/.venv/
+*.egg-info/
+
+# Logs
+backend/server.log
+frontend/.dev-server.log
+*.log
+
+# Uploads (user-generated content, not source)
+backend/uploads/
+
+# Node / frontend deps
+frontend/node_modules/
+node_modules/
+frontend/dist/
+frontend/build/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Claude Code session files
+.claude/
