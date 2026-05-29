@@ -116,9 +116,9 @@ function PostsTab() {
 
   const handleEvergreen = async (id, current) => {
     try {
-      await api.post(`/api/v1/posts/${id}/evergreen`, { cycle_days: 30 });
+      await api.post(`/api/v1/posts/${id}/evergreen`);
       setPosts((prev) =>
-        prev.map((p) => (p.post_id === id ? { ...p, evergreen: !current } : p))
+        prev.map((p) => (p.post_id === id ? { ...p, is_evergreen: !current } : p))
       );
     } catch {}
   };
@@ -149,7 +149,7 @@ function PostsTab() {
   };
 
   const downloadTemplate = () => {
-    const csv = "content,platform,scheduled_at\n";
+    const csv = "account_id,content,scheduled_at\nexample_account_id,Your post content here,2026-06-01T09:00:00\n";
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -198,7 +198,7 @@ function PostsTab() {
             ) : (
               <span>
                 Imported: {csvResult.created ?? "?"} created
-                {csvResult.failed ? `, ${csvResult.failed} failed` : ""}
+                {csvResult.errors?.length ? `, ${csvResult.errors.length} failed` : ""}
               </span>
             )}
           </div>
@@ -266,10 +266,10 @@ function PostRow({ post, onClone, onRetry, onEvergreen, onDelete }) {
       {/* Actions */}
       <div className="flex items-center gap-1 shrink-0">
         <button
-          onClick={() => onEvergreen(post.post_id, post.evergreen)}
+          onClick={() => onEvergreen(post.post_id, post.is_evergreen)}
           title="Toggle evergreen"
           className={`p-1.5 rounded-lg transition-colors ${
-            post.evergreen
+            post.is_evergreen
               ? "text-emerald-600 bg-emerald-50 hover:bg-emerald-100"
               : "text-slate-400 hover:bg-slate-100"
           }`}
@@ -345,9 +345,9 @@ function TimeSlotsTab() {
 
   const handleToggle = async (slot) => {
     try {
-      await api.patch(`/api/v1/queue/slots/${slot.id}`, { is_active: !slot.is_active });
+      await api.patch(`/api/v1/queue/slots/${slot.slot_id}`, { is_active: !slot.is_active });
       setSlots((prev) =>
-        prev.map((s) => (s.id === slot.id ? { ...s, is_active: !s.is_active } : s))
+        prev.map((s) => (s.slot_id === slot.slot_id ? { ...s, is_active: !s.is_active } : s))
       );
     } catch {}
   };
@@ -355,7 +355,7 @@ function TimeSlotsTab() {
   const handleDeleteSlot = async (id) => {
     try {
       await api.delete(`/api/v1/queue/slots/${id}`);
-      setSlots((prev) => prev.filter((s) => s.id !== id));
+      setSlots((prev) => prev.filter((s) => s.slot_id !== id));
     } catch {}
   };
 
@@ -550,7 +550,7 @@ function SlotChip({ slot, onToggle, onDelete }) {
           }`}
         />
         <button
-          onClick={() => onDelete(slot.id)}
+          onClick={() => onDelete(slot.slot_id)}
           className="p-0.5 text-slate-300 hover:text-red-400 transition-colors"
         >
           <Trash2 size={11} />
@@ -598,7 +598,7 @@ function CategoriesTab() {
   const handleDelete = async (id) => {
     try {
       await api.delete(`/api/v1/categories/${id}`);
-      setCategories((prev) => prev.filter((c) => c.id !== id));
+      setCategories((prev) => prev.filter((c) => c.category_id !== id));
     } catch {}
   };
 
@@ -721,7 +721,7 @@ function CategoryCard({ category, onDelete }) {
       )}
       <div className="flex items-center justify-end gap-2 mt-auto pt-2 border-t border-slate-100">
         <button
-          onClick={() => onDelete(category.id)}
+          onClick={() => onDelete(category.category_id)}
           className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-red-500 transition-colors"
         >
           <Trash2 size={13} />

@@ -655,14 +655,30 @@ async def get_post(post_id: str):
 @app.patch("/api/v1/posts/{post_id}", tags=["Posts"], summary="Update a draft or reschedule")
 async def update_post(post_id: str, body: dict = Body(...)):
     db = get_db()
-    ALLOWED = {"content", "media_urls", "scheduled_at", "pillar_id", "category_id", "tags"}
-    update = {k: v for k, v in body.items() if k in ALLOWED}
-    if not update:
+    # Metadata fields (pillar, category, tags) can be updated on any post status
+    META_FIELDS = {"pillar_id", "category_id", "tags"}
+    # Content fields only allowed on draft/scheduled posts
+    CONTENT_FIELDS = {"content", "media_urls", "scheduled_at"}
+
+    meta_update = {k: v for k, v in body.items() if k in META_FIELDS}
+    content_update = {k: v for k, v in body.items() if k in CONTENT_FIELDS}
+
+    if not meta_update and not content_update:
         raise HTTPException(status_code=400, detail="No updatable fields")
+
+    update: dict = {**meta_update}
     update["updated_at"] = datetime.now(timezone.utc)
-    result = await db.posts.update_one(
-        {"post_id": post_id}, {"$set": update}
-    )
+
+    if content_update:
+        # Only apply content updates to draft/scheduled posts
+        post = await db.posts.find_one({"post_id": post_id}, {"status": 1})
+        if not post:
+            raise HTTPException(status_code=404, detail="Post not found")
+        if post.get("status") not in ("draft", "scheduled"):
+            raise HTTPException(status_code=400, detail="Cannot edit content of a published/failed post — clone it instead")
+        update.update(content_update)
+
+    result = await db.posts.update_one({"post_id": post_id}, {"$set": update})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Post not found")
     return {"status": "updated"}
@@ -820,7 +836,7 @@ async def reply_to_inbox(item_id: str, body: ReplyCreate):
 @app.patch("/api/v1/inbox/{item_id}", tags=["Inbox"], summary="Update status or tags")
 async def update_inbox_item(item_id: str, body: dict = Body(...)):
     db = get_db()
-    update = {k: v for k, v in body.items() if k in {"status", "assigned_to", "tags"}}
+    update = {k: v for k, v in body.items() if k in {"status", "assigned_to", "tags", "sentiment"}}
     result = await db.inbox_items.update_one({"item_id": item_id}, {"$set": update})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -835,10 +851,11 @@ async def update_inbox_item(item_id: str, body: dict = Body(...)):
 async def analytics_summary(days: int = Query(30, le=365)):
     db = get_db()
     start = datetime.now(timezone.utc) - timedelta(days=days)
+    date_filter = {"created_at": {"$gte": start}}
 
-    total_posts = await db.posts.count_documents({})
-    by_status = {s: await db.posts.count_documents({"status": s}) for s in ["draft", "scheduled", "published", "failed"]}
-    by_platform = {p: await db.posts.count_documents({"platform": p}) for p in ["instagram", "twitter", "linkedin", "facebook"]}
+    total_posts = await db.posts.count_documents(date_filter)
+    by_status = {s: await db.posts.count_documents({"status": s, **date_filter}) for s in ["draft", "scheduled", "published", "failed"]}
+    by_platform = {p: await db.posts.count_documents({"platform": p, **date_filter}) for p in ["instagram", "twitter", "linkedin", "facebook", "tiktok", "youtube"]}
     connected_accounts = await db.accounts.count_documents({"is_active": True})
     unread_inbox = await db.inbox_items.count_documents({"status": "unread"})
 

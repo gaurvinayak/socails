@@ -177,7 +177,8 @@ function ConversationPanel({ item, onUpdate }) {
       ]);
       const newTags = Array.from(new Set([...(item.tags || []), tagRes.data.tag]));
       const sentiment = sentimentRes.data.sentiment;
-      await updateInboxItem(item.item_id, { tags: newTags });
+      // Persist both tags and sentiment to DB
+      await updateInboxItem(item.item_id, { tags: newTags, sentiment });
       onUpdate(item.item_id, { tags: newTags, sentiment });
     } catch { } finally { setTagging(false); }
   };
@@ -192,7 +193,7 @@ function ConversationPanel({ item, onUpdate }) {
     e.stopPropagation();
     try {
       await deleteTemplate(id);
-      setTemplates((prev) => prev.filter((t) => t.id !== id));
+      setTemplates((prev) => prev.filter((t) => t.template_id !== id));
     } catch { }
   };
 
@@ -308,14 +309,14 @@ function ConversationPanel({ item, onUpdate }) {
                 ) : (
                   <ul className="max-h-48 overflow-y-auto">
                     {templates.map((tpl) => (
-                      <li key={tpl.id} className="group flex items-start justify-between gap-2 px-3 py-2.5 hover:bg-slate-50 cursor-pointer border-b border-slate-50 last:border-0"
+                      <li key={tpl.template_id} className="group flex items-start justify-between gap-2 px-3 py-2.5 hover:bg-slate-50 cursor-pointer border-b border-slate-50 last:border-0"
                         onClick={() => handleUseTemplate(tpl)}>
                         <div className="min-w-0">
                           <p className="text-xs font-semibold text-slate-800 truncate">{tpl.name}</p>
                           <p className="text-[11px] text-slate-400 truncate">{tpl.content?.slice(0, 60)}{tpl.content?.length > 60 ? "…" : ""}</p>
                         </div>
                         <button
-                          onClick={(e) => handleDeleteTemplate(e, tpl.id)}
+                          onClick={(e) => handleDeleteTemplate(e, tpl.template_id)}
                           className="flex-shrink-0 p-1 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
                         >
                           <Trash2 size={12} />
@@ -479,10 +480,10 @@ export default function Inbox() {
               {alerts.length > 0 && (
                 <ul className="max-h-[200px] overflow-y-auto space-y-1 mb-2">
                   {alerts.map((alert) => (
-                    <li key={alert.id} className="flex items-center justify-between gap-2 bg-white rounded-lg px-2.5 py-1.5 border border-amber-100">
+                    <li key={alert.alert_id} className="flex items-center justify-between gap-2 bg-white rounded-lg px-2.5 py-1.5 border border-amber-100">
                       <span className="text-xs text-slate-700 truncate">{alert.keyword}</span>
                       <button
-                        onClick={() => handleDeleteAlert(alert.id)}
+                        onClick={() => handleDeleteAlert(alert.alert_id)}
                         className="flex-shrink-0 p-0.5 text-slate-300 hover:text-red-500 transition-colors"
                       >
                         <Trash2 size={11} />

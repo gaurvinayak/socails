@@ -404,13 +404,9 @@ export default function Composer() {
       if (threadMode && hasTwitter && twitterAccount) {
         const scheduledIso = scheduleMode === "schedule" && scheduledAt ? new Date(scheduledAt).toISOString() : null;
         await api.post("/api/v1/posts/thread", {
-          posts: tweetCards.map((cardContent) => ({
-            content: cardContent,
-            platform: "twitter",
-            account_id: twitterAccount.account_id,
-            media_urls: [],
-            scheduled_at: scheduledIso,
-          })),
+          account_id: twitterAccount.account_id,
+          tweets: tweetCards.filter(t => t.trim()),
+          media_urls: [],
           scheduled_at: scheduledIso,
         });
         setToast({ type: "success", message: `Thread (${tweetCards.length} tweets) submitted` });

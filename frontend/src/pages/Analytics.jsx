@@ -72,7 +72,7 @@ function BestTimeHeatmap({ heatmap, heatmapLoading }) {
     );
   }
 
-  const matrix = heatmap?.matrix;
+  const matrix = heatmap?.data;
   const allZero = !matrix || matrix.every((row) => row.every((v) => v === 0));
 
   return (
@@ -263,11 +263,11 @@ export default function Analytics() {
   };
 
   const byPlatformData = summary
-    ? Object.entries(summary.by_platform || {}).map(([platform, count]) => ({ platform, count }))
+    ? Object.entries(summary.posts_by_platform || {}).map(([platform, count]) => ({ platform, count }))
     : [];
 
   const byStatusData = summary
-    ? Object.entries(summary.by_status || {}).map(([status, value]) => ({ name: status, value }))
+    ? Object.entries(summary.posts_by_status || {}).map(([status, value]) => ({ name: status, value }))
     : [];
 
   const overTimeData = summary?.posts_over_time ?? [];
@@ -311,9 +311,9 @@ export default function Analytics() {
           {/* Stat cards */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
             <StatCard label="Total posts" value={summary?.total_posts} sub={`Last ${days} days`} color="violet" />
-            <StatCard label="Published" value={summary?.by_status?.published ?? 0} sub="Successfully sent" color="emerald" />
-            <StatCard label="Scheduled" value={summary?.by_status?.scheduled ?? 0} sub="Queued to publish" color="blue" />
-            <StatCard label="Failed" value={summary?.by_status?.failed ?? 0} sub="Needs attention" color="rose" />
+            <StatCard label="Published" value={summary?.posts_by_status?.published ?? 0} sub="Successfully sent" color="emerald" />
+            <StatCard label="Scheduled" value={summary?.posts_by_status?.scheduled ?? 0} sub="Queued to publish" color="blue" />
+            <StatCard label="Failed" value={summary?.posts_by_status?.failed ?? 0} sub="Needs attention" color="rose" />
           </div>
 
           {/* Charts row */}
