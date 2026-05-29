@@ -35,6 +35,13 @@ os.makedirs(UPLOADS_DIR, exist_ok=True)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await connect_db()
+    # Run DB migrations (idempotent — safe on every restart)
+    try:
+        from migrate import run as run_migrations
+        await run_migrations(db=get_db())
+    except Exception as _mig_err:
+        import logging as _log
+        _log.getLogger(__name__).warning("Migration warning: %s", _mig_err)
     start_scheduler()
     yield
     stop_scheduler()
