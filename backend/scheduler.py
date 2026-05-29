@@ -8,6 +8,8 @@ Jobs:
 import logging
 from datetime import datetime, timezone
 
+import uuid
+
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -120,11 +122,36 @@ async def fire_webhooks(db, event: str, payload: dict):
         {"is_active": True, "events": event}, {"_id": 0}
     ).to_list(20)
     for hook in hooks:
+        status = "success"
+        error_msg = None
+        http_status = None
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                await client.post(hook["url"], json={"event": event, "data": payload})
+                resp = await client.post(hook["url"], json={"event": event, "data": payload})
+                http_status = resp.status_code
+                if resp.status_code >= 400:
+                    status = "failed"
+                    error_msg = f"HTTP {resp.status_code}"
         except Exception as exc:
+            status = "failed"
+            error_msg = str(exc)[:300]
             logger.warning("Webhook delivery failed (%s): %s", hook["url"], exc)
+        # Persist delivery attempt
+        try:
+            from datetime import datetime, timezone
+            await db.webhook_deliveries.insert_one({
+                "delivery_id": str(uuid.uuid4()),
+                "webhook_id": hook.get("webhook_id", ""),
+                "url": hook["url"],
+                "event": event,
+                "payload": payload,
+                "status": status,
+                "http_status": http_status,
+                "error": error_msg,
+                "delivered_at": datetime.now(timezone.utc),
+            })
+        except Exception as log_exc:
+            logger.warning("Failed to log webhook delivery: %s", log_exc)
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────

@@ -25,7 +25,7 @@ import platforms.twitter as twitter_platform
 import platforms.youtube as youtube_platform
 from database import connect_db, disconnect_db, get_db
 from publishing import publish_post as do_publish
-from scheduler import start_scheduler, stop_scheduler
+from scheduler import fire_webhooks, start_scheduler, stop_scheduler
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3001")
 UPLOADS_DIR = os.path.join(os.path.dirname(__file__), "uploads")
@@ -232,6 +232,9 @@ class PostCreate(BaseModel):
     content: str
     media_urls: list[str] = []
     scheduled_at: Optional[datetime] = None
+    pillar_id: Optional[str] = None
+    category_id: Optional[str] = None
+    tags: list[str] = []
 
 
 class ReplyCreate(BaseModel):
@@ -609,7 +612,12 @@ async def create_post(body: PostCreate):
         "published_at": None,
         "error_message": None,
         "platform_post_id": None,
+        "pillar_id": body.pillar_id,
+        "category_id": body.category_id,
+        "tags": body.tags,
+        "metrics": {},
         "created_at": datetime.now(timezone.utc),
+        "updated_at": None,
     }
     await db.posts.insert_one(doc)
     doc.pop("_id", None)
@@ -647,14 +655,16 @@ async def get_post(post_id: str):
 @app.patch("/api/v1/posts/{post_id}", tags=["Posts"], summary="Update a draft or reschedule")
 async def update_post(post_id: str, body: dict = Body(...)):
     db = get_db()
-    update = {k: v for k, v in body.items() if k in {"content", "media_urls", "scheduled_at"}}
+    ALLOWED = {"content", "media_urls", "scheduled_at", "pillar_id", "category_id", "tags"}
+    update = {k: v for k, v in body.items() if k in ALLOWED}
     if not update:
         raise HTTPException(status_code=400, detail="No updatable fields")
+    update["updated_at"] = datetime.now(timezone.utc)
     result = await db.posts.update_one(
-        {"post_id": post_id, "status": {"$in": ["draft", "scheduled"]}}, {"$set": update}
+        {"post_id": post_id}, {"$set": update}
     )
     if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Post not found or already published")
+        raise HTTPException(status_code=404, detail="Post not found")
     return {"status": "updated"}
 
 
@@ -676,6 +686,9 @@ async def publish_post_endpoint(post_id: str):
     if post["status"] == "published":
         return {"status": "already_published", "post_id": post_id}
     result = await do_publish(post, db)
+    # Fire webhooks (same events the scheduler fires for scheduled posts)
+    event = "post.published" if result["status"] == "published" else "post.failed"
+    await fire_webhooks(db, event, {"post_id": post_id, "platform": post["platform"], **result})
     if result["status"] == "failed":
         raise HTTPException(status_code=502, detail=result.get("error", "Publish failed"))
     return {"status": "published", "post_id": post_id, **result}
@@ -789,8 +802,19 @@ async def reply_to_inbox(item_id: str, body: ReplyCreate):
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     # TODO Phase 2: call platform API to send the reply
-    await db.inbox_items.update_one({"item_id": item_id}, {"$set": {"status": "done"}})
-    return {"status": "reply_sent", "content": body.content}
+    replied_at = datetime.now(timezone.utc).isoformat()
+    reply_doc = {
+        "content": body.content,
+        "replied_at": replied_at,
+    }
+    await db.inbox_items.update_one(
+        {"item_id": item_id},
+        {
+            "$set": {"status": "done", "replied_at": replied_at},
+            "$push": {"replies": reply_doc},
+        },
+    )
+    return {"status": "reply_sent", "content": body.content, "replied_at": replied_at}
 
 
 @app.patch("/api/v1/inbox/{item_id}", tags=["Inbox"], summary="Update status or tags")
@@ -856,25 +880,55 @@ async def post_metrics(
     return posts
 
 
-@app.get("/api/v1/analytics/top-posts", tags=["Analytics"], summary="Top posts by engagement")
+@app.get("/api/v1/analytics/top-posts", tags=["Analytics"], summary="Top posts by engagement (likes + comments + shares)")
 async def top_posts(platform: Optional[str] = Query(None), limit: int = Query(10, le=50)):
     db = get_db()
     query: dict = {"status": "published"}
-    if platform: query["platform"] = platform
-    return await db.posts.find(query, {"_id": 0}).sort("published_at", -1).limit(limit).to_list(limit)
+    if platform:
+        query["platform"] = platform
+    # Fetch a larger pool then sort by engagement score in Python
+    # (MongoDB $add on nested fields requires aggregation pipeline)
+    posts = await db.posts.find(query, {"_id": 0}).sort("published_at", -1).limit(500).to_list(500)
+
+    def engagement_score(p: dict) -> int:
+        m = p.get("metrics") or {}
+        return (
+            (m.get("likes") or 0)
+            + (m.get("comments") or 0)
+            + (m.get("shares") or 0)
+            + (m.get("reach") or 0) // 10  # weight reach lower
+        )
+
+    posts.sort(key=engagement_score, reverse=True)
+    return posts[:limit]
 
 
 @app.get("/api/v1/analytics/export", tags=["Analytics"], summary="Export post data as CSV")
 async def export_analytics():
     db = get_db()
     posts = await db.posts.find({}, {"_id": 0}).to_list(5000)
-    lines = ["post_id,platform,status,content,scheduled_at,published_at,created_at"]
+    headers = [
+        "post_id", "platform", "status", "content",
+        "pillar_id", "category_id", "tags",
+        "likes", "comments", "shares", "reach",
+        "scheduled_at", "published_at", "created_at",
+    ]
+    lines = [",".join(headers)]
     for p in posts:
+        m = p.get("metrics") or {}
+        tag_str = "|".join(p.get("tags") or [])
         lines.append(",".join([
             str(p.get("post_id", "")),
             str(p.get("platform", "")),
             str(p.get("status", "")),
             f'"{str(p.get("content","")).replace(chr(34), chr(39))}"',
+            str(p.get("pillar_id", "") or ""),
+            str(p.get("category_id", "") or ""),
+            f'"{tag_str}"',
+            str(m.get("likes", "") or ""),
+            str(m.get("comments", "") or ""),
+            str(m.get("shares", "") or ""),
+            str(m.get("reach", "") or ""),
             str(p.get("scheduled_at", "") or ""),
             str(p.get("published_at", "") or ""),
             str(p.get("created_at", "") or ""),
@@ -998,6 +1052,17 @@ async def generate_caption(body: CaptionRequest):
     """
     try:
         captions = await ai_module.generate_captions(body.prompt, body.platform, body.tone)
+        # Log activity to DB
+        db = get_db()
+        await db.ai_activity.insert_one({
+            "activity_id": str(uuid.uuid4()),
+            "type": "caption",
+            "prompt": body.prompt,
+            "platform": body.platform,
+            "tone": body.tone,
+            "result": captions,
+            "created_at": datetime.now(timezone.utc),
+        })
         return {"captions": captions}
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -1077,7 +1142,12 @@ async def create_thread_post(body: ThreadCreate):
             "published_at": None,
             "error_message": None,
             "platform_post_id": None,
+            "pillar_id": None,
+            "category_id": None,
+            "tags": [],
+            "metrics": {},
             "created_at": datetime.now(timezone.utc),
+            "updated_at": None,
         }
         docs.append(doc)
     if docs:
@@ -1127,7 +1197,12 @@ async def bulk_csv_posts(file: UploadFile = File(...)):
                 "published_at": None,
                 "error_message": None,
                 "platform_post_id": None,
+                "pillar_id": None,
+                "category_id": None,
+                "tags": [],
+                "metrics": {},
                 "created_at": datetime.now(timezone.utc),
+                "updated_at": None,
             }
             await db.posts.insert_one(doc)
             doc.pop("_id", None)
@@ -1450,6 +1525,17 @@ async def repurpose_post(body: RepurposeRequest):
         results = await ai_module.repurpose_content(
             body.content, body.source_platform, body.target_platforms
         )
+        # Log activity to DB
+        db = get_db()
+        await db.ai_activity.insert_one({
+            "activity_id": str(uuid.uuid4()),
+            "type": "repurpose",
+            "source_platform": body.source_platform,
+            "target_platforms": body.target_platforms,
+            "original_content": body.content,
+            "result": results,
+            "created_at": datetime.now(timezone.utc),
+        })
         return {"repurposed": results}
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -1600,7 +1686,12 @@ async def create_carousel_post(body: CarouselCreate):
         "published_at": None,
         "error_message": None,
         "platform_post_id": None,
+        "pillar_id": None,
+        "category_id": None,
+        "tags": ["carousel"],
+        "metrics": {},
         "created_at": datetime.now(timezone.utc),
+        "updated_at": None,
     }
     await db.posts.insert_one(post_doc)
     post_doc.pop("_id", None)
@@ -1795,6 +1886,7 @@ async def create_goal(body: GoalCreate):
 async def update_goal(goal_id: str, body: dict = Body(..., example={"current_value": 450, "target": 2000})):
     db = get_db()
     update = {k: v for k, v in body.items() if k in {"current_value", "target", "deadline"}}
+    update["updated_at"] = datetime.now(timezone.utc)
     result = await db.goals.update_one({"goal_id": goal_id}, {"$set": update})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Goal not found")
